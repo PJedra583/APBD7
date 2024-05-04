@@ -57,17 +57,37 @@ public class WarehouseController : ControllerBase
                //czy isnieje rekord w bazie 
                command.CommandText = "Select * from \"order\" where IdProduct = @product_id and amount = @amount and " +
                                      "Createdat < @date ";
+               
                command.Parameters.AddWithValue("@amount", ware.Amount);
                command.Parameters.AddWithValue("@date", ware.CreatedAt);
+               
+               //odczytanie idorder
+               reader = await command.ExecuteReaderAsync();
+               var orderid = -1;
+               if (!reader.HasRows)
+               {
+                  return BadRequest("No such order in DB" + command.CommandText);
+               }
+               else
+               {
+                  while (reader.Read())
+                  {
+                     orderid = reader.GetInt32(0);
+                  }
+               }
+               await reader.CloseAsync();
+               
+               //Sprawdzenie czy zamowienie zostało już zrealizowane
+               command.CommandText = "Select 1 from \"order\" where IdProduct = @product_id and amount = @amount and " +
+                                     "idorder = @idOrder and fulfilledat is null " ;
+               command.Parameters.AddWithValue("@idOrder", orderid);
                reader = await command.ExecuteReaderAsync();
                if (!reader.HasRows)
                {
-                  return BadRequest("No such order in DB");
+                  return BadRequest("Order was Fulfilled!");
                }
                await reader.CloseAsync();
-
-               var orderid = reader.GetInt32(0);
-
+               
                //Sprawdzenie czy zamowienie jest w tabeli product_warehouse
                command.CommandText = "Select 1 from Product_warehouse where IdProduct = @product_id and amount = @amount and " +
                                      "IdWarehouse = @ware_id";
@@ -77,35 +97,49 @@ public class WarehouseController : ControllerBase
                   return BadRequest("Same order was actually placed!");
                }
                await reader.CloseAsync();
+               
+              
+
 
                //Wykonanie zamówienia
-               var d = DateTime.Now;
-               command.CommandText = "UPDATE \"order\" SET Fullfilledat = " + d +
-                                     " WHERE IdProduct = @product_id and amount = @amount and IdWarehouse = @ware_id";
+               var date_now = DateTime.Now;
+               command.CommandText = "UPDATE \"order\" SET Fulfilledat = @Date_now" +
+                                     " WHERE IdProduct = @product_id and amount = @amount and idorder = @idOrder";
+               command.Parameters.AddWithValue("@Date_now", date_now);
                if (await command.ExecuteNonQueryAsync() < 1)
                {
                   return BadRequest("Some DB Error");
                }
 
-               command.CommandText = "Select count(*) from Product_warehouse";
-               reader = await command.ExecuteReaderAsync();
-               var idProductWarehouse = reader.GetInt32(0);
-               idProductWarehouse++;
-               await reader.CloseAsync();
-
                command.CommandText = "Select * from Product where idproduct = @product_id";
                reader = await command.ExecuteReaderAsync();
-               var pric = reader.GetDouble(3);
-               pric *= ware.Amount;
+               Decimal pric;
+               if (reader.Read())
+               {
+                  pric = reader.GetDecimal(3);
+                  pric *= ware.Amount;
+                  command.Parameters.AddWithValue("@price", pric);
+               }
                await reader.CloseAsync();
 
                //Wstawienie zamówienia
                command.CommandText = "INSERT INTO Product_Warehouse values " +
-                                     "(@idProductWare, @ware_id, @product_id, @idOrder, @amount, @price, d)";
-               command.Parameters.AddWithValue("@price", pric);
-               command.Parameters.AddWithValue("@idProductWare", idProductWarehouse);
-               command.Parameters.AddWithValue("@idOrder", orderid);
-
+                                     "(@ware_id, @product_id, @idOrder, @amount, @price, @Date_now)";
+               if (await command.ExecuteNonQueryAsync() < 1)
+               {
+                  command.CommandText = "rollback";
+                  await command.ExecuteNonQueryAsync();
+                  return BadRequest("Failed to insert");
+               }
+               
+               //odczytanie klucza głównego: 
+               command.CommandText =
+                  "Select idproductwarehouse from Product_Warehouse where idWarehouse = @ware_id and " +
+                  " idproduct = @product_id and idorder = @idOrder";
+               reader = await command.ExecuteReaderAsync();
+               reader.Read();
+               var idProductWarehouse = reader.GetInt32(0);
+               await reader.CloseAsync();
                return Ok("Order placed successfully. Primary key: " + idProductWarehouse);
             }
          }
